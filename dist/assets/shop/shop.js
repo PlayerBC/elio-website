@@ -4,6 +4,8 @@ import {basketLineKey,mergeBasketItems,basketIncreaseLimit,flavorPickerLimit,pro
 import {productNavigation} from './product-navigation.js';
 import {mountProductPhotos} from './product-photo-viewer.js?v=icon-only-1';
 import {checkoutNavigation} from './checkout-navigation.js';
+import {watchSections,watchFirstProductRow} from '../store-motion.js?v=selected-1';
+import {mountQuickCart} from './quick-cart.js?v=1';
 import {responsiveImage} from '../responsive-images.js';
 import {checkoutFailure} from './checkout-recovery.js';
 import {reviewWindow,reviewPayment} from './checkout-review.js';
@@ -36,7 +38,22 @@ let promoRequest=0,promoPending=false,promoQuote=null,promoKey='',promoMessage='
 let draftStorage;try{draftStorage=window.sessionStorage;}catch{}
 const productDraftStore=productDrafts(draftStorage);
 const productRoutes=productNavigation({dialog:$('#product-dialog'),findProduct:value=>catalog.products.find(p=>p.id===value||p.slug===value),showProduct:openProduct,onUnavailable:()=>toast('This box is not currently listed in the shop.')});
-const checkoutRoutes=checkoutNavigation({dialog:$('#checkout-dialog'),showDetails:()=>openCheckout(),showReview:()=>renderReview(),canReview:()=>Boolean(quote&&state.items.length),canNavigate:()=>!busy,onClose:()=>$('#checkout-button')?.focus({preventScroll:true})});
+const bagTrigger=$('[data-open-quick-cart]'),quickCart=mountQuickCart($('#quick-cart-dialog'),{getBasket:()=>$('#cart'),fallbackTrigger:()=>bagTrigger});
+let checkoutReturn=null;
+function returnCheckoutFocus(){
+ const target=checkoutReturn?.getClientRects().length?checkoutReturn:$('#checkout-button');
+ checkoutReturn=null;target?.focus({preventScroll:true});
+}
+const checkoutRoutes=checkoutNavigation({dialog:$('#checkout-dialog'),showDetails:()=>openCheckout(),showReview:()=>renderReview(),canReview:()=>Boolean(quote&&state.items.length),canNavigate:()=>!busy,onClose:returnCheckoutFocus});
+const basketHash=()=>['#your-bag','#your-basket'].includes(location.hash);
+function showBasket(opener=bagTrigger){
+ if(quickCart.open(opener))return true;
+ const basket=$('#cart');
+ if(!basket||document.querySelector('dialog[open]'))return false;
+ basket.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'start'});
+ return true;
+}
+bagTrigger?.addEventListener('click',event=>{if(!event.ctrlKey&&!event.metaKey&&!event.shiftKey&&!event.altKey&&showBasket()){event.preventDefault();event.stopPropagation();}});
 const persist=()=>{try{sessionStorage.setItem(storageKey,JSON.stringify({...state,saved_at:Date.now()}))}catch{}};
 // Personal codes arrive in a fragment so they are not sent in HTTP referrers.
 const selectedVoucher=new URLSearchParams(location.hash.slice(1)).get('voucher');
@@ -82,13 +99,14 @@ function productCard(p){
 }
 function placeholder(){return '<div class="empty-state" aria-label="Product photo coming soon"><div class="empty-icon">'+icon+'</div><small>Fresh from our kitchen</small></div>'}
 function renderShop(){
+  quickCart.close({restoreFocus:false});
   orderReadId++;orderRefreshing=false;displayedOrder=null;scheduleReceipt=null;
   clearTimeout(refreshTimer);customerCalendar?.destroy();customerCalendar=null;
   document.body.classList.remove('viewing-order');
   app.innerHTML=`${catalog.settings.paused?'<div class="notice" role="status">'+esc(catalog.settings.pause_message||'We’re temporarily pausing new orders. Please check back soon.')+'</div>':''}
   <section class="fulfillment-bar" aria-label="Choose fulfillment"><div class="date-field"><span id="fulfillment-date-label">When is your Elio day?</span><div id="customer-date-picker"></div></div><div class="method-toggle" role="group" aria-label="Pickup or delivery"><button data-method="pickup" class="${state.method==='pickup'?'selected':''}" aria-pressed="${state.method==='pickup'}">Pickup</button><button data-method="delivery" class="${state.method==='delivery'?'selected':''}" aria-pressed="${state.method==='delivery'}">Delivery</button></div></section><div id="fulfillment-notice" class="notice" role="status" hidden></div>
-  <div class="shop-layout"><section id="cheesecake-boxes"><div class="section-heading"><h2>Our Cheesecake Boxes</h2><span class="muted">A box for every craving.</span></div><div id="product-grid" class="product-grid"></div><p class="help-card">One basket, one date. Fixed sets come as shown; build your own box to choose your three flavors.</p></section><aside id="cart" class="panel cart-panel" aria-label="Your basket"></aside></div><button id="mobile-cart" class="mobile-cart" hidden></button>`;
-  renderProducts();renderCart();
+  <div class="shop-layout"><section id="cheesecake-boxes"><div class="section-heading" data-store-section="shop-boxes"><h2>Our Cheesecake Boxes</h2><span class="muted">A box for every craving.</span></div><div id="product-grid" class="product-grid"></div><p class="help-card">One basket, one date. Fixed sets come as shown; build your own box to choose your three flavors.</p></section><aside id="cart" class="panel cart-panel" aria-label="Your basket"></aside></div><button id="mobile-cart" class="mobile-cart" aria-haspopup="dialog" aria-controls="quick-cart-dialog" aria-expanded="false" hidden></button>`;
+  renderProducts();renderCart();watchSections(app);
   customerCalendar=mountCustomerCalendar($('#customer-date-picker'),{value:state.fulfillment_date,settings:catalog.settings,method:state.method,allowSameDay:sameDayEligible(),onSelect:date=>{state.fulfillment_date=date;quote=null;persist();renderProducts();renderCart();if(configured)loadInventory()}});
   document.querySelectorAll('[data-method]').forEach(b=>b.onclick=()=>{state.method=b.dataset.method;quote=null;persist();renderShop()});
 }
@@ -103,9 +121,10 @@ function renderProducts(){
  const products=sortProducts(catalog.products,category==='all'?'':category).filter(p=>category==='all'||productCategoryIds(p,catalog.categories).includes(category));
  grid.innerHTML=products.length?products.map(p=>productCard(p)).join(''):'<div class="empty-state"><h3>No boxes are listed right now.</h3><p>Please check back soon.</p></div>';
  grid.querySelectorAll('[data-product]').forEach(b=>b.onclick=()=>productRoutes.open(b.dataset.product));
+ watchFirstProductRow(grid,'shop','[data-product]');
 }
 
-function renderCart(focus){customerCalendar?.update({value:state.fulfillment_date,settings:catalog.settings,method:state.method,allowSameDay:sameDayEligible()});updateFulfillment();const count=state.items.reduce((s,l)=>s+l.quantity,0),errors=issues(),limits=state.items.map((_,i)=>basketIncreaseLimit(state.items,i,catalog.products,catalog.inventory,state.fulfillment_date));$('#cart').innerHTML=`${removedBasketItem?'<div id="basket-undo" class="notice" role="status">'+esc(removedBasketItem.line.name||'Box')+' removed. <button type="button" id="undo-remove" class="button-quiet">Undo</button><span id="undo-error"></span></div>':''}<div class="cart-head"><h2 class="no-margin">Your basket</h2><span class="cart-count">${count}</span></div><div class="basket-plan"><strong>${state.fulfillment_date?`${formatDate(state.fulfillment_date)} · ${statusLabel(state.method)}`:"Choose your fulfillment date"}</strong><button type="button" id="basket-change-date" class="button-quiet">${state.fulfillment_date?"Change date":"Choose date"}</button></div>${!count?`<div class="empty-state"><div class="empty-icon">${icon}</div><h3>A little room for something sweet</h3><p style="font-size:11px">Pick a treat from the menu<br>and make it yours.</p></div>`:state.items.map((line,i)=>`<div class="cart-line"><div><h3>${esc(lineProduct(line)?.name||line.name||'Unavailable item')}</h3>${lineProduct(line)?.pickup_only===true?'<span class="badge pickup-only-badge">Pickup only</span>':''}<div class="cart-options">${esc(lineProduct(line)?selectionLabels(lineProduct(line),line.selections).join('\n'):'Please remove this item.')}</div><div style="margin-top:9px"><div class="quantity-control"><button data-qty="${i}" data-delta="-1" ${line.quantity<=1?'disabled':''} aria-label="Decrease ${esc(line.name||'item')} quantity">−</button><span>${line.quantity}</span><button data-qty="${i}" data-delta="1" ${limits[i].message?`disabled aria-describedby="basket-quantity-limit-${i}"`:""} aria-label="Increase ${esc(line.name||'item')} quantity">+</button></div><button data-remove="${i}" class="remove-line">Remove</button></div>${limits[i].message?`<div id="basket-quantity-limit-${i}" class="notice" role="status" style="margin-top:10px">${esc(limits[i].message)}</div>`:""}</div><span class="line-price">${money(linePrice(line)*line.quantity)}</span></div>`).join('')}
+function renderCart(focus){const savedFocus=quickCart.captureFocus();customerCalendar?.update({value:state.fulfillment_date,settings:catalog.settings,method:state.method,allowSameDay:sameDayEligible()});updateFulfillment();const count=state.items.reduce((s,l)=>s+l.quantity,0),errors=issues(),limits=state.items.map((_,i)=>basketIncreaseLimit(state.items,i,catalog.products,catalog.inventory,state.fulfillment_date));$('#cart').innerHTML=`${removedBasketItem?'<div id="basket-undo" class="notice" role="status">'+esc(removedBasketItem.line.name||'Box')+' removed. <button type="button" id="undo-remove" class="button-quiet">Undo</button><span id="undo-error"></span></div>':''}<div class="cart-head"><h2 class="no-margin">Your basket</h2><span class="cart-count">${count}</span></div><div class="basket-plan"><strong>${state.fulfillment_date?`${formatDate(state.fulfillment_date)} · ${statusLabel(state.method)}`:"Choose your fulfillment date"}</strong><button type="button" id="basket-change-date" class="button-quiet">${state.fulfillment_date?"Change date":"Choose date"}</button></div>${!count?`<div class="empty-state"><div class="empty-icon">${icon}</div><h3>A little room for something sweet</h3><p style="font-size:11px">Pick a treat from the menu<br>and make it yours.</p></div>`:state.items.map((line,i)=>`<div class="cart-line"><div><h3>${esc(lineProduct(line)?.name||line.name||'Unavailable item')}</h3>${lineProduct(line)?.pickup_only===true?'<span class="badge pickup-only-badge">Pickup only</span>':''}<div class="cart-options">${esc(lineProduct(line)?selectionLabels(lineProduct(line),line.selections).join('\n'):'Please remove this item.')}</div><div style="margin-top:9px"><div class="quantity-control"><button data-qty="${i}" data-delta="-1" ${line.quantity<=1?'disabled':''} aria-label="Decrease ${esc(line.name||'item')} quantity">−</button><span>${line.quantity}</span><button data-qty="${i}" data-delta="1" ${limits[i].message?`disabled aria-describedby="basket-quantity-limit-${i}"`:""} aria-label="Increase ${esc(line.name||'item')} quantity">+</button></div><button data-remove="${i}" class="remove-line">Remove</button></div>${limits[i].message?`<div id="basket-quantity-limit-${i}" class="notice" role="status" style="margin-top:10px">${esc(limits[i].message)}</div>`:""}</div><span class="line-price">${money(linePrice(line)*line.quantity)}</span></div>`).join('')}
   ${errors.length?`<div class="notice danger" style="margin-top:16px">${[...new Set(errors)].map(esc).join('<br>')}</div>`:''}${count?amountLines():''}<button id="checkout-button" class="button block" ${!count||!state.fulfillment_date||catalog.settings.paused||errors.length||(!configured&&!demo)?'disabled':''}>${demo?'Preview checkout':'Continue to checkout'} <span aria-hidden="true">→</span></button><p class="cart-footnote">${count&&state.fulfillment_date?`${formatDate(state.fulfillment_date)} · ${statusLabel(state.method)}`:'Select your date before checkout'}<br>Full payment · Confirmed after manual review</p>`;
   document.querySelectorAll('[data-qty]').forEach(b=>b.onclick=()=>{const index=Number(b.dataset.qty),line=state.items[index],delta=Number(b.dataset.delta);if(delta>0&&basketIncreaseLimit(state.items,index,catalog.products,catalog.inventory,state.fulfillment_date).message)return;const key=basketLineKey(line);line.quantity=Math.max(1,line.quantity+delta);quote=null;persist();renderCart({key,delta});});
   document.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{
@@ -124,14 +143,16 @@ function renderCart(focus){customerCalendar?.update({value:state.fulfillment_dat
       state.items=merged;quote=null;removedBasketItem=null;clearTimeout(undoTimer);persist();renderCart({key:basketLineKey(line),delta:1});toast('Your box and flavor choices are back.');
     }catch(error){$('#undo-error').textContent=' '+error.message;}
   };
-  $('#basket-change-date').onclick=()=>{$('.fulfillment-bar')?.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});$('.customer-calendar-trigger')?.focus({preventScroll:true});};
+  $('#basket-change-date').onclick=()=>{quickCart.close({restoreFocus:false});$('.fulfillment-bar')?.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});$('.customer-calendar-trigger')?.focus({preventScroll:true});};
   $('#checkout-button').onclick=()=>{if(!state.fulfillment_date){$('.customer-calendar-trigger')?.focus();toast('Choose a fulfillment date to continue.');return}openCheckout()};
-  const mobile=$('#mobile-cart');mobile.hidden=!count;mobile.innerHTML=`<span>${count} ${count===1?'treat':'treats'} · View basket</span><span>${money(subtotal())}</span>`;mobile.onclick=()=>$('#cart').scrollIntoView({behavior:'smooth',block:'start'});
+  const mobile=$('#mobile-cart');mobile.hidden=!count;mobile.innerHTML=`<span>${count} ${count===1?'treat':'treats'} · View basket</span><span>${money(subtotal())}</span>`;mobile.onclick=()=>showBasket(mobile);
   if(focus){const index=state.items.findIndex(line=>basketLineKey(line)===focus.key),same=$('[data-qty="'+index+'"][data-delta="'+focus.delta+'"]'),fallback=$('[data-qty="'+index+'"]:not(:disabled)')||$('[data-remove="'+index+'"]');(same&&!same.disabled?same:fallback)?.focus({preventScroll:true});}
+  else quickCart.restoreFocus(savedFocus);
 }
 async function loadInventory(){try{const next=await api('catalog',{fulfillment_date:state.fulfillment_date});catalog=prepareCatalog(next);customerCalendar?.update({value:state.fulfillment_date,settings:catalog.settings,method:state.method,allowSameDay:sameDayEligible()});renderProducts();renderCart()}catch(e){toast(e.message,'danger')}}
 let productPhotos=null;
 function openProduct(id){
+  quickCart.close({restoreFocus:false});
   productPhotos?.destroy();
   const p=catalog.products.find(p=>p.id===id),dialog=$('#product-dialog'),a=displayAvailability(p);
   const draft=productDraftStore.read(p,state.fulfillment_date,catalog.inventory),selected=draft?.selected||Object.fromEntries((p.option_groups||[]).map(g=>[g.id,{}]));
@@ -250,7 +271,8 @@ function openCheckout(){
   if(checkoutRoutes.step==='review'&&!checkoutRoutes.restoring){checkoutRoutes.back();return;}
   const dialog=$('#checkout-dialog'),s=catalog.settings;
   const dateIssue=customerDateIssue(state.fulfillment_date,s,state.method,new Date(),sameDayEligible());
-  if(!state.fulfillment_date||dateIssue){if(dialog.open)checkoutRoutes.close();toast(dateIssue||'Choose a fulfillment date to continue.','danger');$('#fulfillment-date')?.focus();return;}
+  if(!state.fulfillment_date||dateIssue){quickCart.close({restoreFocus:false});if(dialog.open)checkoutRoutes.close();toast(dateIssue||'Choose a fulfillment date to continue.','danger');$('#fulfillment-date')?.focus();return;}
+  checkoutReturn=quickCart.close({restoreFocus:false})||checkoutReturn;
   if(!state.buyer.email&&session?.user?.email)state.buyer.email=session.user.email;
   if(!promoQuote||promoKey!==promoContextKey())resetPromoCheck();
   dialog.innerHTML=`<div class="modal-head"><div><span class="eyebrow">${demo?'Sample checkout':'One more little step'}</span><h2 id="checkout-title">Your order details</h2></div><button class="close-button" aria-label="Close checkout">×</button></div><div class="modal-content"><form id="checkout-form"><div class="checkout-grid"><div><div class="checkout-section"><h3>1. Your details</h3><p class="muted" style="font-size:12px">${session?`Signed in as ${esc(session.user.email)}.`:'Checking out as a guest? That’s fine. <a id="checkout-signin" href="account.html?next=order.html">Sign in</a> to use a promo code or keep your orders together.'}</p>${inputField('Buyer name','buyer_name',state.buyer.name,'text',true,'autocomplete="name" maxlength="150"')}<div class="field-row">${inputField('Email address','buyer_email',state.buyer.email,'email',true,'autocomplete="email" maxlength="254"')}${inputField('Contact number','buyer_phone',state.buyer.phone,'tel',true,'autocomplete="tel" inputmode="tel" maxlength="40"')}</div><div id="checkout-newsletter" hidden></div><div class="field-row social-contact-row"><label class="field">Social platform <span class="muted">(We may contact you about your order)</span><select name="social_platform" required aria-describedby="social-contact-help"><option value="">Choose a platform</option><option value="facebook" ${state.buyer.social_platform==='facebook'?'selected':''}>Facebook</option><option value="instagram" ${state.buyer.social_platform==='instagram'?'selected':''}>Instagram</option><option value="na" ${state.buyer.social_platform==='na'?'selected':''}>N/A</option></select></label>${inputField('Social username','social_username',state.buyer.social_username,'text',true,`maxlength="100" aria-describedby="social-contact-help" ${['facebook','instagram','na'].includes(state.buyer.social_platform)?'':'disabled'}`)}</div><p id="social-contact-help" class="muted" style="font-size:12px">Enter your username or profile name, or N/A if unavailable.</p></div>
@@ -261,7 +283,7 @@ function openCheckout(){
   $('#apply-promo').onclick=()=>applyPromoCode(form);
   form.elements.namedItem('promo_code').onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();applyPromoCode(form)}};
   $('#remove-promo').onclick=()=>{form.elements.namedItem('promo_code').value='';readCheckout(form);quote=null;resetPromoCheck('Promo code removed.');updatePromoUi();form.elements.namedItem('promo_code').focus()};
-  dialog.onclose=()=>resetPromoCheck();
+  dialog.onclose=()=>{resetPromoCheck();if(!dialog.open&&checkoutReturn)returnCheckoutFocus();};
   updatePromoUi();
   form.onsubmit=async e=>{
     e.preventDefault();if(busy||promoPending||checkoutRoutes.navigating)return;syncCheckoutFields(form);if(!form.reportValidity())return;readCheckout(form);
@@ -311,6 +333,7 @@ async function renderOrder(provided=null){
   if(!provided&&busy&&$('#proof-form')?.getAttribute('aria-busy')==='true'&&$('#proof-form').dataset.orderId===new URLSearchParams(location.hash.slice(1)).get('order'))return;
   clearTimeout(refreshTimer);customerCalendar?.destroy();customerCalendar=null;const params=new URLSearchParams(location.hash.slice(1)),id=params.get('order'),token=params.get('token');document.body.classList.add('viewing-order');
   if(!id)return renderShop();
+  quickCart.close({restoreFocus:false});
   if(!configured){app.innerHTML='<div class="panel empty-state"><h1>Order access needs backend setup</h1><p>Your order link will work once the configured shop services are connected.</p><a href="order.html" class="button-secondary">Back to shop</a></div>';return}
   const accessKey=orderAccessKey();if(!provided&&orderRefreshing&&displayedOrder?.key===accessKey)return;
   const request=++orderReadId,isCurrent=()=>request===orderReadId&&accessKey===orderAccessKey();
@@ -362,9 +385,9 @@ async function init(){
   if(configured)catalog=prepareCatalog(await api('catalog'));else catalog.settings.paused=true;
   state.items=mergeBasketItems(state.items,999);state.method='pickup';state.fulfillment_date=firstAvailableDate(state.items,catalog.products,catalog.settings,catalog.inventory);persist();
   if(new URLSearchParams(location.hash.slice(1)).has('order'))await renderOrder();
-  else {renderShop();productRoutes.restore();if(['#your-bag','#your-basket'].includes(location.hash))$('#cart')?.scrollIntoView({block:'start'});}
+  else {renderShop();productRoutes.restore();if(basketHash())showBasket();}
  }catch(e){app.innerHTML=`<div class="panel empty-state"><h2>The menu is taking a little longer</h2><p>${esc(e.message)}</p><button class="button" id="retry-menu">Try again</button></div>`;$('#retry-menu').onclick=()=>location.reload();}
  finally{app.removeAttribute('aria-busy');}
 }
-window.addEventListener('hashchange',()=>{if(location.hash.includes('order='))renderOrder();else if(location.hash==='#your-bag'||location.hash==='#your-basket')$('#cart')?.scrollIntoView({behavior:'smooth'});else if(document.body.classList.contains('viewing-order'))renderShop()});
+window.addEventListener('hashchange',()=>{if(location.hash.includes('order='))renderOrder();else{if(document.body.classList.contains('viewing-order'))renderShop();if(basketHash())showBasket();}});
 init();

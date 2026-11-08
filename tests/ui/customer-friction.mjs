@@ -15,11 +15,20 @@ function fixture(capacity=30){
  return {catalog,collection,session:null,orderError:null,orderGate:null,collectionGate:null,calls:[]};
 }
 const browser=await chromium.launch({executablePath:process.env.BROWSER_EXECUTABLE_PATH,headless:true});
-async function make({width=390,capacity=30,session=null,holdCollection=false}={}){
+async function make({width=390,capacity=30,session=null,holdCollection=false,reducedMotion='reduce',motionProbe=false}={}){
  const data=fixture(capacity);data.session=session;
+ if(motionProbe)for(let i=0;i<3;i++)data.catalog.products.push({...data.catalog.products[1],id:'row-fixture-'+i,name:'Extra box '+i,sort_order:i+1});
  if(holdCollection)data.collectionGate=new Promise(r=>data.releaseCollection=r);
- const ctx=await browser.newContext({viewport:{width,height:900},reducedMotion:'reduce',serviceWorkers:'block'}),errors=[];
+ const ctx=await browser.newContext({viewport:{width,height:900},reducedMotion,serviceWorkers:'block'}),errors=[];
  await ctx.addInitScript(()=>{localStorage.setItem('elio-newsletter-popup-v1',JSON.stringify({state:'submitted',firstVisit:Date.now(),updatedAt:Date.now()}));localStorage.setItem('elio-analytics-choice-v1',JSON.stringify({value:'denied',expires:Date.now()+86400000}));});
+ if(motionProbe)await ctx.addInitScript(()=>{
+  const animate=Element.prototype.animate;window.__selectedMotion=[];
+  Element.prototype.animate=function(frames,options){
+   const kind=this.matches('#product-grid [data-product]')?'row':this.matches('#home-box-viewport [data-home-box]')?'home-row':this.matches('[data-store-section]')?'section':this.matches('.quick-cart-shell')?'panel':'';
+   if(kind)window.__selectedMotion.push({kind,delay:options?.delay||0,duration:options?.duration,section:this.dataset.storeSection});
+   return animate.call(this,frames,options);
+  };
+ });
  await ctx.exposeBinding('testAuth',async(_,{action})=>{if(action==='signin')data.session=identity('customer-1');if(action==='signout')data.session=null;return {data:{session:data.session,user:data.session?.user},error:null};});
  await ctx.exposeBinding('testRpc',async(_,{action,payload})=>{
   data.calls.push({action,payload});
@@ -89,6 +98,68 @@ try{
  }
  {
   const t=await make({session:identity('customer-1')}),{page,data}=t;await page.goto(origin+'/account.html');await page.locator('.account-order').waitFor();data.session=identity('customer-2');await page.evaluate(session=>window.__authChange('SIGNED_IN',session),data.session);await page.getByText('ELIO-customer-2',{exact:true}).waitFor();assert.equal(await page.getByText('ELIO-customer-1',{exact:true}).count(),0);await finish(t,'switching account identity removes the previous customer’s order cards');
+ }
+
+ for(const width of [320,390,1440]){
+  const t=await make({width,reducedMotion:'no-preference',motionProbe:true}),{page,data}=t;await menu(page);
+  await page.locator('#product-grid [data-product]').first().scrollIntoViewIfNeeded();
+  await page.waitForFunction(()=>window.__selectedMotion.some(a=>a.kind==='row')&&window.__selectedMotion.some(a=>a.section==='shop-boxes'));
+  const initialRow=await page.evaluate(()=>window.__selectedMotion.filter(a=>a.kind==='row'));
+  assert.ok(initialRow.length>=1&&initialRow.length<=3,'Only the first visible row enters');
+  assert.ok(initialRow.every(a=>a.delay<=120&&(width>700||a.delay===0)),'Stagger is capped and removed on phones');
+  await page.locator('[data-method="delivery"]').click();await page.locator('#product-grid [data-product]').first().scrollIntoViewIfNeeded();await page.waitForTimeout(100);
+  assert.deepEqual(await page.evaluate(()=>window.__selectedMotion.filter(a=>a.kind==='row')),initialRow,'Shop rerender does not replay cards');
+  assert.equal(await page.evaluate(()=>window.__selectedMotion.filter(a=>a.section==='shop-boxes').length),1,'Section does not replay after changing fulfillment');
+  await open(page,'fixed');await add(page);
+  const opener=width<=700?page.locator('#mobile-cart'):page.locator('[data-open-quick-cart]');
+  await opener.scrollIntoViewIfNeeded();
+  const before=await page.evaluate(()=>{window.__originalBasket=document.querySelector('#cart');return {url:location.href,history:history.length,scroll:scrollY};});
+  await opener.click();const panel=page.locator('#quick-cart-dialog[open]');await panel.waitFor();
+  assert.equal(await page.locator('#cart').count(),1);assert.equal(await panel.locator('#cart').evaluate(e=>e===window.__originalBasket),true);
+  assert.equal(await panel.getByRole('button',{name:'Close basket'}).evaluate(e=>e===document.activeElement),true);
+  assert.equal(await page.evaluate(()=>window.__selectedMotion.filter(a=>a.kind==='panel').at(-1).duration),250);
+  for(let i=0;i<8;i++){await page.keyboard.press('Tab');assert.equal(await panel.evaluate(e=>e.contains(document.activeElement)),true);}
+  await panel.locator('[data-qty="0"][data-delta="1"]').click();assert.equal(await panel.locator('.quantity-control span').textContent(),'2');assert.match(await panel.locator('.grand-total').innerText(),/200\.00/);
+  await panel.locator('[data-remove="0"]').click();assert.equal(await panel.locator('.cart-line').count(),0);
+  await panel.locator('#undo-remove').click();assert.equal(await panel.locator('.quantity-control span').textContent(),'2');
+  const rect=await panel.boundingBox();assert.ok(rect.x>=-1&&rect.x+rect.width<=width+1);
+  if(width<=700){assert.ok(Math.abs(rect.width-width)<=1);assert.ok(rect.height<=765);}
+  await page.screenshot({path:join(out,'quick-cart-'+width+'.png')});
+  await page.keyboard.press('Escape');await panel.waitFor({state:'detached'});
+  assert.equal(await opener.evaluate(e=>e===document.activeElement),true);
+  assert.equal(await page.locator('#app #cart').evaluate(e=>e===window.__originalBasket),true);
+  assert.deepEqual(await page.evaluate(()=>({url:location.href,history:history.length,scroll:scrollY})),before,'Opening and closing preserves route, history and page position');
+  await opener.click();await panel.locator('#basket-change-date').click();await panel.waitFor({state:'detached'});
+  assert.equal(await page.locator('.customer-calendar-trigger').evaluate(e=>e===document.activeElement),true);
+  await opener.click();await panel.locator('#checkout-button').click();await page.locator('#checkout-dialog[open]').waitFor();
+  assert.equal(await panel.count(),0);assert.equal(await page.locator('#app #cart .quantity-control span').textContent(),'2');
+  await page.keyboard.press('Escape');await page.locator('#checkout-dialog[open]').waitFor({state:'detached'});
+  assert.equal(await opener.evaluate(e=>e===document.activeElement),true);
+  assert.equal(data.calls.some(call=>['quote','create_order'].includes(call.action)),false,'Panel and checkout entry send no quote or order request');
+  await finish(t,'first product row and section run once; same basket, limits, undo, date, checkout and focus in quick panel '+width);
+ }
+ {
+  const t=await make({motionProbe:true}),{page}=t;await page.goto(origin+'/order.html#your-basket');
+  await page.locator('#quick-cart-dialog[open]').waitFor();assert.deepEqual(await page.evaluate(()=>window.__selectedMotion),[]);
+  assert.equal(await page.locator('#checkout-button').isDisabled(),true);await page.keyboard.press('Escape');
+  await page.goto(origin+'/order.html?product=fixed#your-basket');await page.locator('#product-dialog[open]').waitFor();
+  assert.equal(await page.locator('#quick-cart-dialog[open]').count(),0);assert.deepEqual(await page.evaluate(()=>window.__selectedMotion),[]);
+  await finish(t,'reduced motion disables the new effects; basket deep link works and product dialog keeps priority');
+ }
+
+ {
+  const t=await make({width:1440,reducedMotion:'no-preference',motionProbe:true}),{page}=t;
+  await page.goto(origin+'/index.html?preview=1');
+  await page.locator('#home-box-viewport [data-home-box]').first().scrollIntoViewIfNeeded();
+  await page.waitForFunction(()=>window.__selectedMotion.filter(a=>a.kind==='home-row').length===3);
+  assert.deepEqual(await page.evaluate(()=>window.__selectedMotion.filter(a=>a.kind==='home-row').map(a=>a.delay)),[0,60,120]);
+  await page.evaluate(()=>scrollTo({top:0,behavior:'instant'}));await page.locator('#home-box-viewport').scrollIntoViewIfNeeded();
+  assert.equal(await page.evaluate(()=>window.__selectedMotion.filter(a=>a.kind==='home-row').length),3);
+  await page.goto(origin+'/index.html?preview=1&anchor-test=1#home-boxes');
+  await page.locator('#home-box-viewport [data-home-box]').first().waitFor();await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(()=>window.__selectedMotion.some(a=>a.kind==='home-row')),false);
+  assert.equal(await page.locator('[data-open-quick-cart],#brand-intro').count(),0);
+  await finish(t,'home boxes enter once with capped stagger, and anchor links show the row immediately');
  }
  await writeFile(join(out,'results.json'),JSON.stringify({passed:results.length,results},null,2));console.log('PASS all customer-friction browser scenarios');
 }finally{await browser.close();}

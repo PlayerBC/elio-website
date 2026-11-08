@@ -1,0 +1,22 @@
+@media (hover:hover) and (pointer:fine) and (prefers-reduced-motion:no-preference){
+ #product-grid .elio-product-media>img{transition:transform 350ms cubic-bezier(.2,.7,.2,1)}
+ #product-grid .elio-product-card:hover .elio-product-media>img{transform:scale(1.025)}
+}
+@media (prefers-reduced-motion:reduce){
+ .home-box-photo img,.home-box-photo:hover img{transition:none;transform:none}
+ #product-grid .elio-product-media>img{transition:none;transform:none}
+}
+dialog.elio-commerce.quick-cart:not([open]){display:none!important}
+dialog.elio-commerce.quick-cart{position:fixed;inset:0 0 0 auto;margin:0;width:min(440px,100%);max-width:100%;height:100vh;height:100dvh;max-height:100dvh;padding:0;border:0;border-left:1px solid var(--line);border-radius:0;overflow:auto;overscroll-behavior:contain;background:var(--paper)}
+dialog.elio-commerce.quick-cart::backdrop{background:#291b1980;backdrop-filter:none}
+.quick-cart-shell{min-width:0}
+.quick-cart-top{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--paper)}
+.quick-cart-top .eyebrow{margin:0;color:var(--brown)}
+.quick-cart-top [data-close-quick-cart]{width:44px;height:44px;flex:none}
+dialog.elio-commerce.quick-cart .cart-panel{position:static;margin:0;padding:20px;border:0;border-radius:0;box-shadow:none;background:var(--paper)}
+.quick-cart-placeholder{min-width:0;pointer-events:none}
+@media(max-width:700px){
+ dialog.elio-commerce.quick-cart{inset:auto 0 0;width:100%;height:fit-content;max-height:85vh;max-height:85dvh;border-left:0;border-top:1px solid var(--line);border-radius:16px 16px 0 0}
+ .quick-cart-top{padding:10px 16px}
+ dialog.elio-commerce.quick-cart .cart-panel{padding:16px 16px max(16px,env(safe-area-inset-bottom))}
+}
